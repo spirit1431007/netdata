@@ -1,9 +1,36 @@
 #!/bin/sh
 
-echo ">>> Installing Netdata..."
-/netdata/packaging/installer/kickstart.sh --dont-wait --disable-telemetry || exit 1
-echo ">>> Updating Netdata..."
-export NETDATA_NIGHTLIES_BASEURL="http://localhost:8080/artifacts/" # Pull the tarball from the local web server.
-/netdata/packaging/installer/netdata-updater.sh --not-running-from-cron --no-updater-self-update || exit 1
+export PATH="/opt/netdata/bin:${PATH}"
+echo "::group::>>> Installing CI support packages..."
+sh -x .github/scripts/ci-support-pkgs.sh || exit 1
+echo "::endgroup::"
+mkdir -p /etc/cron.daily # Needed to make auto-update checking work correctly on some platforms.
+echo "::group::>>> Installing Netdata..."
+sh -x packaging/installer/kickstart.sh --dont-wait --static-only --dont-start-it --disable-telemetry || exit 1
+echo "::endgroup::"
+echo "::group::>>> Pre-Update Environment File Contents"
+cat /opt/netdata/etc/netdata/.environment
+echo "::endgroup::"
+echo "::group::>>> Pre-Update Netdata Build Info"
+/opt/netdata/bin/netdata -W buildinfo
+echo "::endgroup::"
+echo "::group::>>> Updating Netdata..."
+export NETDATA_BASE_URL="http://localhost:8080" # Pull the tarball from the local web server.
+echo 'NETDATA_ACCEPT_MAJOR_VERSIONS="1 9999"' > /opt/netdata/etc/netdata/netdata-updater.conf
+timeout 3600 sh -x packaging/installer/netdata-updater.sh --force-update --not-running-from-cron --no-updater-self-update
+ret="$?"
+echo "::endgroup::"
+
+case "${ret}" in
+    124) echo "!!! Updater timed out." ; exit 1 ;;
+    0) ;;
+    *) echo "!!! Updater failed." ; exit 1 ;;
+esac
+echo "::group::>>> Post-Update Environment File Contents"
+cat /opt/netdata/etc/netdata/.environment
+echo "::endgroup::"
+echo "::group::>>> Post-Update Netdata Build Info"
+/opt/netdata/bin/netdata -W buildinfo
+echo "::endgroup::"
 echo ">>> Checking if update was successful..."
-/netdata/.github/scripts/check-updater.sh || exit 1
+sh -x .github/scripts/check-updater.sh || exit 1

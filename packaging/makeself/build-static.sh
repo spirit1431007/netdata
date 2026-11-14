@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -9,61 +9,112 @@ BUILDARCH="${1}"
 
 set -e
 
-case ${BUILDARCH} in
-  x86_64) platform=linux/amd64 ;;
-  armv7l) platform=linux/arm/v7 ;;
-  aarch64) platform=linux/arm64/v8 ;;
-  ppc64le) platform=linux/ppc64le ;;
-  *)
-    echo "Unknown target architecture '${BUILDARCH}'."
+platform="$("$(dirname "${0}")/uname2platform.sh" "${BUILDARCH}")"
+
+if [ -z "${platform}" ]; then
     exit 1
-    ;;
-esac
-
-DOCKER_CONTAINER_NAME="netdata-package-${BUILDARCH}-static-alpine314"
-
-if [ "${BUILDARCH}" != "$(uname -m)" ] && [ "$(uname -m)" = 'x86_64' ] && [ -z "${SKIP_EMULATION}" ]; then
-    docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || exit 1
 fi
 
-if ! docker inspect "${DOCKER_CONTAINER_NAME}" > /dev/null 2>&1; then
-  # To run interactively:
-  #   docker run -it netdata-package-x86_64-static /bin/sh
-  # (add -v host-dir:guest-dir:rw arguments to mount volumes)
-  #
-  # To remove images in order to re-create:
-  #   docker rm -v $(sudo docker ps -a -q -f status=exited)
-  #   docker rmi netdata-package-x86_64-static
-  #
-  # This command maps the current directory to
-  #   /usr/src/netdata.git
-  # inside the container and runs the script install-alpine-packages.sh
-  # (also inside the container)
-  #
-  if docker inspect alpine:3.14 > /dev/null 2>&1; then
-    run docker image remove alpine:3.14
-    run docker pull --platform=${platform}  alpine:3.14
-  fi
+if command -v docker > /dev/null 2>&1; then
+    docker="docker"
+elif command -v podman > /dev/null 2>&1; then
+    docker="podman"
+else
+    echo "Could not find a usable OCI runtime, need either Docker or Podman."
+    exit 1
+fi
 
-  run docker run --platform=${platform} -v "$(pwd)":/usr/src/netdata.git:rw alpine:3.14 \
-    /bin/sh /usr/src/netdata.git/packaging/makeself/install-alpine-packages.sh
+case "${BUILDARCH}" in
+    x86_64) # x86-64-v2 equivalent
+        QEMU_ARCH="x86_64"
+        QEMU_CPU="Nehalem-v2"
+        TUNING_FLAGS="-march=x86-64"
+        GOAMD64="v1"
+        GOARCH="amd64"
+        ;;
+    armv6l) # Raspberry Pi 1 equivalent
+        QEMU_ARCH="arm"
+        QEMU_CPU="arm1176"
+        TUNING_FLAGS="-march=armv6zk -mtune=arm1176jzf-s"
+        GOARM="6"
+        GOARCH="arm"
+        ;;
+    armv7l) # Baseline ARMv7 CPU
+        QEMU_ARCH="arm"
+        QEMU_CPU="cortex-a7"
+        TUNING_FLAGS="-march=armv7-a"
+        GOARM="7"
+        GOARCH="arm"
+        ;;
+    aarch64) # Baseline ARMv8 CPU
+        QEMU_ARCH="aarch64"
+        QEMU_CPU="cortex-a53"
+        # Work around Cortex-A53 errata 835769 and 843419 (Raspberry Pi 3, ODROID-C2, ...). The builder's GCC enables
+        # neither by default, and neither QEMU nor the CI runners' ARM cores exhibit them. The 843419 fix happens at
+        # link time, so the jobs also pass $(errata_ldflags) to every final link.
+        TUNING_FLAGS="-march=armv8-a -mfix-cortex-a53-835769 -mfix-cortex-a53-843419"
+        GOARM64="v8.0"
+        GOARCH="arm64"
+        ;;
+esac
 
-  # save the changes made permanently
-  id=$(docker ps -l -q)
-  run docker commit "${id}" "${DOCKER_CONTAINER_NAME}"
+[ -f "/proc/sys/fs/binfmt_misc/qemu-${QEMU_ARCH}" ] && SKIP_EMULATION=1
+
+if [ "${BUILDARCH}" != "$(uname -m)" ] && [ -z "${SKIP_EMULATION}" ]; then
+    ${docker} run --rm --privileged tonistiigi/binfmt:master --install "${QEMU_ARCH}" || exit 1
+fi
+
+DOCKER_IMAGE_NAME="netdata/static-builder:v1"
+stock_env=()
+
+if [ -n "${NETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR:-}" ]; then
+    if [ ! -d "${NETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR}" ]; then
+        echo "Could not find the topology IP intelligence stock directory: ${NETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR}"
+        exit 1
+    fi
+
+    stock_host_dir="$(cd -- "${NETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR}" && pwd -P)"
+    stock_env=(
+        -v "${stock_host_dir}:/topology-ip-intel-stock:ro"
+        -e "NETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR=/topology-ip-intel-stock"
+    )
+fi
+
+if ${docker} inspect "${DOCKER_IMAGE_NAME}" > /dev/null 2>&1; then
+    if ${docker} image inspect "${DOCKER_IMAGE_NAME}" | grep -q 'Variant'; then
+        img_platform="$(${docker} image inspect "${DOCKER_IMAGE_NAME}" --format '{{.Os}}/{{.Architecture}}/{{.Variant}}')"
+    else
+        img_platform="$(${docker} image inspect "${DOCKER_IMAGE_NAME}" --format '{{.Os}}/{{.Architecture}}')"
+    fi
+
+    if [ "${img_platform}" != "${platform}" ]; then
+        ${docker} image rm "${DOCKER_IMAGE_NAME}" || exit 1
+    fi
+fi
+
+if ! ${docker} inspect "${DOCKER_IMAGE_NAME}" > /dev/null 2>&1; then
+    ${docker} pull --platform "${platform}" "${DOCKER_IMAGE_NAME}"
 fi
 
 # Run the build script inside the container
 if [ -t 1 ]; then
-  run docker run -e BUILDARCH="${BUILDARCH}" -a stdin -a stdout -a stderr -i -t -v "$(pwd)":/usr/src/netdata.git:rw \
-    "${DOCKER_CONTAINER_NAME}" \
-    /bin/sh /usr/src/netdata.git/packaging/makeself/build.sh "${@}"
+  run ${docker} run --rm -e BUILDARCH="${BUILDARCH}" -a stdin -a stdout -a stderr -i -t -v "$(pwd)":/netdata:rw \
+    --platform "${platform}" ${EXTRA_INSTALL_FLAGS:+-e EXTRA_INSTALL_FLAGS="${EXTRA_INSTALL_FLAGS}"} \
+    ${DEBUG_BUILD_INFRA:+-e DEBUG_BUILD_INFRA=1} \
+    ${QEMU_CPU:+-e QEMU_CPU="${QEMU_CPU}"} \
+    "${stock_env[@]}" \
+    -e TUNING_FLAGS="${TUNING_FLAGS}" ${GOARCH:+-e GOARCH="${GOARCH}"} \
+    ${GOAMD64:+-e GOAMD64="${GOAMD64}"} ${GOARM:+-e GOARM="${GOARM}"} \
+    ${GOARM64:+-e GOARM64="${GOARM64}"} ${GOPPC64:+-e GOPPC64="${GOPPC64}"} \
+    "${DOCKER_IMAGE_NAME}" /bin/sh /netdata/packaging/makeself/build.sh "${@}"
 else
-  run docker run -e BUILDARCH="${BUILDARCH}" -v "$(pwd)":/usr/src/netdata.git:rw \
-    -e GITHUB_ACTIONS="${GITHUB_ACTIONS}" "${DOCKER_CONTAINER_NAME}" \
-    /bin/sh /usr/src/netdata.git/packaging/makeself/build.sh "${@}"
-fi
-
-if [ "${USER}" ]; then
-  sudo chown -R "${USER}" .
+  run ${docker} run --rm -e BUILDARCH="${BUILDARCH}" -v "$(pwd)":/netdata:rw \
+    -e GITHUB_ACTIONS="${GITHUB_ACTIONS}" --platform "${platform}" \
+    ${EXTRA_INSTALL_FLAGS:+-e EXTRA_INSTALL_FLAGS="${EXTRA_INSTALL_FLAGS}"} \
+    ${QEMU_CPU:+-e QEMU_CPU="${QEMU_CPU}"} \
+    "${stock_env[@]}" \
+    -e TUNING_FLAGS="${TUNING_FLAGS}" ${GOARCH:+-e GOARCH="${GOARCH}"} \
+    ${GOAMD64:+-e GOAMD64="${GOAMD64}"} ${GOARM:+-e GOARM="${GOARM}"} \
+    ${GOARM64:+-e GOARM64="${GOARM64}"} ${GOPPC64:+-e GOPPC64="${GOPPC64}"} \
+    "${DOCKER_IMAGE_NAME}" /bin/sh /netdata/packaging/makeself/build.sh "${@}"
 fi

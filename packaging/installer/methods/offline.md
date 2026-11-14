@@ -1,90 +1,144 @@
-<!--
-title: "Install Netdata on offline systems"
-description: "Install the Netdata Agent on offline/air gapped systems to benefit from real-time, per-second monitoring without connecting to the internet."
-custom_edit_url: https://github.com/netdata/netdata/edit/master/packaging/installer/methods/offline.md
--->
+# Install Netdata on Offline Systems
 
-# Install Netdata on offline systems
+This guide explains how to install Netdata Agent on systems without internet access.
 
-The Netdata Agent installs on offline or air gapped systems with a few additional steps.
+Netdata supports offline installation of the Agent using our `kickstart.sh` script.
 
-By default, the `kickstart.sh` and `kickstart-static64.sh` download Netdata assets, like the precompiled binary and a
-few dependencies, using the system's internet connection, but the Agent installer can also use equivalent files already
-present on the local filesystem.
+This method:
 
-First, download the required files. If you're using `kickstart.sh`, you need the Netdata tarball, the checksums, the
-go.d plugin binary, and the go.d plugin configuration. If you're using `kickstart-static64.sh`, you need only the
-Netdata tarball and checksums.
+- Downloads all required files in advance.
+- Works with static builds only (for now).
+- Does *not* support automatic updates on offline systems.
 
-Download the files you need to a system of yours that's connected to the internet. Use the commands below, or visit the
-[latest Netdata release page](https://github.com/netdata/netdata/releases/latest) and [latest go.d plugin release
-page](https://github.com/netdata/go.d.plugin/releases) to download the required files manually.
+:::note
 
-**If you're using `kickstart.sh`**, use the following commands:
+Local package tools like `apt-offline` may work for DEB/RPM installs — but we don’t officially support them.
 
-```bash
-cd /tmp
+:::
 
-curl -s https://my-netdata.io/kickstart.sh > kickstart.sh
+:::note
 
-# Netdata tarball
-curl -s https://api.github.com/repos/netdata/netdata/releases/latest | grep "browser_download_url.*tar.gz" | cut -d '"' -f 4 | wget -qi -
+For offline installation on Windows, see [Install Netdata on Windows](/packaging/windows/WINDOWS_INSTALLER.md#offline-air-gapped-installation). This guide covers UNIX-like systems only.
 
-# Netdata checksums
-curl -s https://api.github.com/repos/netdata/netdata/releases/latest | grep "browser_download_url.*txt" | cut -d '"' -f 4 | wget -qi -
+:::
 
-# Netdata dependency handling script
-wget -q - https://raw.githubusercontent.com/netdata/netdata/master/packaging/installer/install-required-packages.sh
+## Step 1: Prepare the Offline Installation Package
 
-# go.d plugin 
-# For binaries for OS types and architectures not listed on [go.d releases](https://github.com/netdata/go.d.plugin/releases/latest), kindly open a github issue and we will do our best to serve your request
-export OS=$(uname -s | tr '[:upper:]' '[:lower:]') ARCH=$(uname -m | sed -e 's/i386/386/g' -e 's/i686/386/g' -e 's/x86_64/amd64/g' -e 's/aarch64/arm64/g' -e 's/armv64/arm64/g' -e 's/armv6l/arm/g' -e 's/armv7l/arm/g' -e 's/armv5tel/arm/g') && curl -s https://api.github.com/repos/netdata/go.d.plugin/releases/latest | grep "browser_download_url.*${OS}-${ARCH}.tar.gz" | cut -d '"' -f 4 | wget -qi -
+On your internet-connected machine, you'll need::
 
-# go.d configuration 
-curl -s https://api.github.com/repos/netdata/go.d.plugin/releases/latest | grep "browser_download_url.*config.tar.gz" | cut -d '"' -f 4 | wget -qi -
+| Requirement             | Purpose                    |
+|-------------------------|----------------------------|
+| `curl` or `wget`        | Download the script        |
+| `sha256sum` or `shasum` | Verify script downloads    |
+| POSIX-compliant shell   | Required to run the script |
+
+Run the following command:
+
+- using `wget`
+  ```bash
+  wget -O /tmp/netdata-kickstart.sh https://get.netdata.cloud/kickstart.sh
+  sh /tmp/netdata-kickstart.sh --release-channel stable --prepare-offline-install-source ./netdata-offline
+  ```
+- or using `curl`
+  ```bash
+  curl https://get.netdata.cloud/kickstart.sh > /tmp/netdata-kickstart.sh
+  sh /tmp/netdata-kickstart.sh --release-channel stable --prepare-offline-install-source ./netdata-offline
+  ```
+
+:::note
+
+The folder name `netdata-offline` is just an example — use any name you want.
+To use the nightly channel instead, replace `stable` with `nightly`.
+
+:::
+
+**What's Included**:
+
+The script creates a directory with all necessary files:
+
+```
+── netdata-offline
+   ├── channel             # Release channel info
+   ├── install.sh          # Installation script
+   ├── kickstart.sh        # Original kickstart script
+   ├── netdata-*.gz.run    # Netdata static packages for different architectures
+   └── sha256sums.txt      # Verification hashes
 ```
 
-**If you're using `kickstart-static64.sh`**, use the following commands:
+## Step 2: Transfer to Offline System
 
-```bash
-cd /tmp
+Copy the entire `netdata-offline` directory to your offline system using your preferred method (USB drive, secure copy, etc.).
 
-curl -s https://my-netdata.io/kickstart-static64.sh > kickstart-static64.sh
+:::warning
 
-# Netdata static64 tarball
-curl -s https://api.github.com/repos/netdata/netdata/releases/latest | grep "browser_download_url.*gz.run" | cut -d '"' -f 4 | wget -qi -
+Do not rename or modify any files in the package.
+The installation script expects the exact directory structure and filenames.
 
-# Netdata checksums
-curl -s https://api.github.com/repos/netdata/netdata/releases/latest | grep "browser_download_url.*txt" | cut -d '"' -f 4 | wget -qi -
+:::
+
+:::tip
+
+The folder name `netdata-offline` is just an example — use any name you want.
+
+:::
+
+### Output
+
+This will create a directory like:
+
+```
+./netdata-offline/
 ```
 
-Move downloaded files to the `/tmp` directory on the offline system in whichever way your defined policy allows (if
-any).
+It will contain everything required to install Netdata offline.
 
-Now you can run either the `kickstart.sh` or `kickstart-static64.sh` scripts using the `--local-files` option. This
-option requires you to specify the location and names of the files you just downloaded. 
+---
 
-> When using `--local-files`, the `kickstart.sh` or `kickstart-static64.sh` scripts won't download any Netdata assets
-> from the internet. But, you may still need a connection to install dependencies using your system's package manager.
-> The scripts will warn you if your system doesn't have all the dependencies.
+## Choose Release Channel (Optional)
+
+To prepare for a specific channel (`nightly` or `stable`), add:
 
 ```bash
-# kickstart.sh
-bash kickstart.sh --local-files /tmp/netdata-(version-number-here).tar.gz /tmp/sha256sums.txt /tmp/go.d.plugin-(version-number-here).(OS)-(architecture).tar.gz /tmp/config.tar.gz /tmp/install-required-packages.sh
-
-# kickstart-static64.sh
-bash kickstart-static64.sh --local-files /tmp/netdata-(version-number-here).gz.run /tmp/sha256sums.txt
+--release-channel nightly
 ```
 
-## What's next?
+or
 
-When you're finished with installation, check out our [single-node](/docs/quickstart/single-node.md) or
-[infrastructure](/docs/quickstart/infrastructure.md) monitoring quickstart guides based on your use case.
+```bash
+--release-channel stable
+```
 
-Or, skip straight to [configuring the Netdata Agent](/docs/configure/nodes.md).
+Example:
 
-Read through Netdata's [documentation](https://learn.netdata.cloud/docs), which is structured based on actions and
-solutions, to enable features like health monitoring, alarm notifications, long-term metrics storage, exporting to
-external databases, and more.
+```bash
+sh /tmp/netdata-kickstart.sh --release-channel stable --prepare-offline-install-source ./netdata-offline
+```
 
-[![analytics](https://www.google-analytics.com/collect?v=1&aip=1&t=pageview&_s=1&ds=github&dr=https%3A%2F%2Fgithub.com%2Fnetdata%2Fnetdata&dl=https%3A%2F%2Fmy-netdata.io%2Fgithub%2Fpackages%2Finstaller%2Fmethods%2Foffline&_u=MAC~&cid=5792dfd7-8dc4-476b-af31-da2fdb9f93d2&tid=UA-64295674-3)]()
+---
+
+## Install Netdata on the Target (Offline) System
+
+1. Copy the entire `netdata-offline` directory to your offline system.
+
+:::warning
+
+Don't rename or modify the files.
+
+:::
+
+2. On the offline system, run:
+
+```bash
+cd netdata-offline
+sudo ./install.sh
+```
+
+The `install.sh` script accepts the [same parameters](/packaging/installer/methods/kickstart.md#optional-parameters-for-kickstartsh) as `kickstart.sh`, allowing you to customize your installation.
+
+## Automatic Updates
+
+:::note
+
+Automatic updates are *disabled* by default for offline installations — since there’s no network connection.
+
+:::

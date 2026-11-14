@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # -----------------------------------------------------------------------------
@@ -23,23 +23,7 @@ done
 
 # -----------------------------------------------------------------------------
 
-# First run install-alpine-packages.sh under alpine linux to install
-# the required packages. build-x86_64-static.sh will do this for you
-# using docker.
-
-cd "$(dirname "$0")" || exit 1
-
-# if we don't run inside the netdata repo
-# download it and run from it
-if [ ! -f ../../netdata-installer.sh ]; then
-  git clone https://github.com/netdata/netdata.git netdata.git || exit 1
-  cd netdata.git/makeself || exit 1
-  ./build.sh "$@"
-  exit $?
-fi
-
-git clean -dxf
-git submodule foreach --recursive git clean -dxf
+cd /netdata/packaging/makeself || exit 1
 
 cat >&2 << EOF
 This program will create a self-extracting shell package containing
@@ -50,17 +34,19 @@ It can be used to have netdata running in no-time, or in cases the
 target Linux system cannot compile netdata.
 EOF
 
-if [ ! -d tmp ]; then
-  mkdir tmp || exit 1
-else
-  rm -rf tmp/*
-fi
-
 if [ -z "${GITHUB_ACTIONS}" ]; then
     export GITHUB_ACTIONS=false
 fi
 
+mkdir -p /netdata/artifacts
+chown "$(stat -c '%u:%g' /netdata)" /netdata/artifacts/
+
 if ! ./run-all-jobs.sh "$@"; then
   printf >&2 "Build failed."
-  exit 1
+
+  if [ -n "${DEBUG_BUILD_INFRA}" ]; then
+    exec /bin/bash
+  else
+    exit 1
+  fi
 fi
